@@ -33,15 +33,7 @@ public class InventoryActionListener implements Listener {
 
         final ItemStack item = event.getItem();
         final InventoryHolder holder = destination.getHolder(false);
-
-        String hopperName;
-        if (holder instanceof final Hopper hopper) {
-            hopperName = PatternUtil.serialiseComponent(hopper.customName());
-        } else if (holder instanceof final HopperMinecart hopperMinecart) {
-            hopperName = PatternUtil.serialiseComponent(hopperMinecart.customName());
-        } else {
-            return;
-        }
+        final String hopperName = getHopperName(holder);
 
         if (!canItemPassHopper(hopperName, item)) {
             event.setCancelled(true);
@@ -66,19 +58,20 @@ public class InventoryActionListener implements Listener {
         if (!inventory.getType().equals(InventoryType.HOPPER)) return;
 
         final InventoryHolder holder = inventory.getHolder(false);
-
-        String hopperName;
-        if (holder instanceof final Hopper hopper) {
-            hopperName = PatternUtil.serialiseComponent(hopper.customName());
-        } else if (holder instanceof final HopperMinecart hopperMinecart) {
-            hopperName = PatternUtil.serialiseComponent(hopperMinecart.customName());
-        } else {
-            return;
-        }
+        final String hopperName = getHopperName(holder);
 
         if (hopperName == null) return;
 
         if (!canItemPassHopper(hopperName, event.getItem().getItemStack())) event.setCancelled(true);
+    }
+
+    private String getHopperName(InventoryHolder holder) {
+        if (holder instanceof final Hopper hopper) {
+            return PatternUtil.serialiseComponent(hopper.customName());
+        } else if (holder instanceof final HopperMinecart hopperMinecart) {
+            return PatternUtil.serialiseComponent(hopperMinecart.customName());
+        }
+        return null;
     }
 
     private boolean shouldCancelDueToMoreSuitableHopper(final Inventory source, final Hopper destinationHopper, final ItemStack item) {
@@ -136,69 +129,68 @@ public class InventoryActionListener implements Listener {
 
     private boolean canItemPassPattern(final String pattern, final ItemStack item) {
         final String itemName = item.getType().getKey().getKey();
-
         if (pattern.equals(itemName)) return true;
 
-        final char prefix = pattern.charAt(0); // The character at the start of the pattern
-        final String string = pattern.substring(1); // Anything after the prefix
-        return switch (prefix) {
-            case '*' -> itemName.contains(string); // Contains specified pattern
-            case '^' -> itemName.startsWith(string); // Starts with specified pattern
-            case '$' -> itemName.endsWith(string); // Ends with specified pattern
-            case '#' -> { // Item has specified tag
-                Tag<Material> tag = Bukkit.getTag(Tag.REGISTRY_BLOCKS, NamespacedKey.minecraft(string), Material.class);
-                if (tag == null) tag = Bukkit.getTag(Tag.REGISTRY_ITEMS, NamespacedKey.minecraft(string), Material.class);
+        final char prefix = pattern.charAt(0);
+        final String string = pattern.substring(1);
+        switch (prefix) {
+            case '*': return itemName.contains(string);
+            case '^': return itemName.startsWith(string);
+            case '$': return itemName.endsWith(string);
+            case '#': return itemHasTag(string, item);
+            case '~': return itemHasPotionEffect(string, item);
+            case '+': return itemHasEnchantment(string, item);
+            case '!': return !canItemPassPattern(string, item);
+            default: return false;
+        }
+    }
 
-                yield tag != null && tag.isTagged(item.getType());
+    private boolean itemHasTag(String string, ItemStack item) {
+        Tag<Material> tag = Bukkit.getTag(Tag.REGISTRY_BLOCKS, NamespacedKey.minecraft(string), Material.class);
+        if (tag == null) tag = Bukkit.getTag(Tag.REGISTRY_ITEMS, NamespacedKey.minecraft(string), Material.class);
+        return tag != null && tag.isTagged(item.getType());
+    }
+
+    private boolean itemHasPotionEffect(String string, ItemStack item) {
+        final Material material = item.getType();
+        if (!(material.equals(Material.POTION) || material.equals(Material.SPLASH_POTION) || material.equals(Material.LINGERING_POTION))) return false;
+
+        final Pair<String, Integer> pair = PatternUtil.getStringIntegerPairFromString(string);
+        final PotionEffectType type = (PotionEffectType) PatternUtil.getKeyedFromString(pair.getLeft(), Registry.POTION_EFFECT_TYPE);
+        final Integer userLevel = pair.getRight();
+
+        final PotionMeta meta = (PotionMeta) item.getItemMeta();
+        final List<PotionEffect> effects = meta.getBasePotionType().getPotionEffects();
+        if (userLevel == null) {
+            for (PotionEffect effect : effects) {
+                if (effect.getType().equals(type)) return true;
             }
-            case '~' -> { // Item has specified potion effect
-                final Material material = item.getType();
-                if (!(material.equals(Material.POTION) || material.equals(Material.SPLASH_POTION) || material.equals(Material.LINGERING_POTION))) yield false;
-
-                final Pair<String, Integer> pair = PatternUtil.getStringIntegerPairFromString(string);
-
-                final PotionEffectType type = (PotionEffectType) PatternUtil.getKeyedFromString(pair.getLeft(), Registry.POTION_EFFECT_TYPE);
-
-                final Integer userLevel = pair.getRight();
-
-                final PotionMeta meta = (PotionMeta) item.getItemMeta();
-                final List<PotionEffect> effects = meta.getBasePotionType().getPotionEffects();
-                if (userLevel == null) {
-                    for (PotionEffect effect : effects) {
-                        if (effect.getType().equals(type)) yield true;
-                    }
-                } else {
-                    for (PotionEffect effect : effects) {
-                        if (effect.getType().equals(type) && effect.getAmplifier() + 1 == userLevel) yield true;
-                    }
-                }
-                yield false;
+        } else {
+            for (PotionEffect effect : effects) {
+                if (effect.getType().equals(type) && effect.getAmplifier() + 1 == userLevel) return true;
             }
-            case '+' -> { // Item has specified enchantment
-                Map<Enchantment, Integer> enchantments;
-                if (item.getType().equals(Material.ENCHANTED_BOOK)) {
-                    final EnchantmentStorageMeta meta = (EnchantmentStorageMeta) item.getItemMeta();
-                    enchantments = meta.getStoredEnchants();
-                } else {
-                    enchantments = item.getEnchantments();
-                }
+        }
+        return false;
+    }
+    private boolean itemHasEnchantment(String string, ItemStack item) {
+        Map<Enchantment, Integer> enchantments;
+        if (item.getType().equals(Material.ENCHANTED_BOOK)) {
+            final EnchantmentStorageMeta meta = (EnchantmentStorageMeta) item.getItemMeta();
+            enchantments = meta.getStoredEnchants();
+        } else {
+            enchantments = item.getEnchantments();
+        }
 
-                final Pair<String, Integer> pair = PatternUtil.getStringIntegerPairFromString(string);
+        final Pair<String, Integer> pair = PatternUtil.getStringIntegerPairFromString(string);
+        final Enchantment enchantment = (Enchantment) PatternUtil.getKeyedFromString(pair.getLeft(), Registry.ENCHANTMENT);
+        if (enchantment == null) return false;
 
-                final Enchantment enchantment = (Enchantment) PatternUtil.getKeyedFromString(pair.getLeft(), Registry.ENCHANTMENT);
-                if (enchantment == null) yield false;
-
-                final Integer userLevel = pair.getRight();
-
-                final Integer enchantmentLevel = enchantments.get(enchantment);
-                if (userLevel == null) {
-                    yield enchantmentLevel != null;
-                } else {
-                    yield enchantmentLevel != null && (enchantmentLevel).equals(userLevel);
-                }
-            }
-            case '!' -> !canItemPassPattern(string, item); // NOT operator
-            default -> false;
-        };
+        final Integer userLevel = pair.getRight();
+        final Integer enchantmentLevel = enchantments.get(enchantment);
+        if (userLevel == null) {
+            return enchantmentLevel != null;
+        } else {
+            return enchantmentLevel != null && enchantmentLevel.equals(userLevel);
+        }
     }
 }

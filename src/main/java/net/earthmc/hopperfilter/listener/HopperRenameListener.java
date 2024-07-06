@@ -25,118 +25,95 @@ import java.util.*;
 
 public class HopperRenameListener implements Listener {
 
-    private static final Map<Player, Hopper> HOPPER_INTERACTIONS_TYPING = new HashMap<>();
-    private static final Map<Player, HopperRenameInteraction> HOPPER_INTERACTIONS_ITEM = new HashMap<>();
+    private static final Map<Player, Hopper> typingInteractions = new HashMap<>();
+    private static final Map<Player, HopperRenameInteraction> itemInteractions = new HashMap<>();
 
     @EventHandler
     public void onPlayerInteract(final PlayerInteractEvent event) {
         final Block clickedBlock = event.getClickedBlock();
-        if (clickedBlock == null) return;
-
-        if (!(clickedBlock.getState() instanceof final Hopper hopper)) return;
-
-        if (!event.getAction().equals(Action.LEFT_CLICK_BLOCK)) return;
+        if (clickedBlock == null || !(clickedBlock.getState() instanceof Hopper hopper) || !event.getAction().equals(Action.LEFT_CLICK_BLOCK)) return;
 
         final Player player = event.getPlayer();
-        if (!player.isSneaking()) return;
-
-        if (player.getGameMode().equals(GameMode.CREATIVE)) event.setCancelled(true);
+        if (!player.isSneaking() || player.getGameMode().equals(GameMode.CREATIVE)) return;
 
         final ItemStack item = event.getItem();
         if (item == null) {
             initiateHopperRename(player, hopper);
         } else {
-            final BlockBreakEvent bbe = new BlockBreakEvent(hopper.getBlock(), player);
-            if (!bbe.callEvent()) return;
-
-            String key = item.getType().getKey().getKey();
-
-            HopperRenameInteraction hri = HOPPER_INTERACTIONS_ITEM.get(player);
-            if (hri == null) {
-                List<String> items = new ArrayList<>(List.of(key));
-                HOPPER_INTERACTIONS_ITEM.put(player, new HopperRenameInteraction(hopper, items));
-            } else {
-                List<String> items = hri.getItems();
-                if (!items.contains(key)) {
-                    items.add(key);
-                } else {
-                    return;
-                }
-            }
-
-            final Random random = new Random();
-            player.playSound(hopper.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.1F, random.nextFloat(0.55F, 1.25F));
+            handleItemInteraction(player, hopper, item);
         }
     }
 
     @EventHandler
     public void cancelTypingInteractionOnMove(final PlayerMoveEvent event) {
         final Player player = event.getPlayer();
-        final Hopper hopper = HOPPER_INTERACTIONS_TYPING.get(player);
+        final Hopper hopper = typingInteractions.get(player);
         if (hopper == null) return;
 
-        final Location hopperLocation = hopper.getLocation();
-        final double distanceSquared = event.getTo().distanceSquared(hopperLocation);
-
-        if (distanceSquared > 5 * 5) {
-            HOPPER_INTERACTIONS_TYPING.remove(player);
-
-            final Random random = new Random();
-            player.playSound(hopperLocation, Sound.BLOCK_ANVIL_LAND, 0.3F, random.nextFloat(1.25F, 1.5F));
+        if (event.getTo().distanceSquared(hopper.getLocation()) > 25) { // 5 * 5
+            typingInteractions.remove(player);
+            playSound(player, hopper.getLocation(), Sound.BLOCK_ANVIL_LAND, 0.3F, 1.25F, 1.5F);
         }
     }
 
     @EventHandler
     public void cancelItemInteractionOnMove(final PlayerMoveEvent event) {
         final Player player = event.getPlayer();
-        final HopperRenameInteraction hri = HOPPER_INTERACTIONS_ITEM.get(player);
+        final HopperRenameInteraction hri = itemInteractions.get(player);
         if (hri == null) return;
 
-        final Location hopperLocation = hri.getHopper().getLocation();
-        final double distanceSquared = event.getTo().distanceSquared(hopperLocation);
-
-        if (distanceSquared > 5 * 5) {
-            HOPPER_INTERACTIONS_ITEM.remove(player);
-
-            final Random random = new Random();
-            player.playSound(hopperLocation, Sound.BLOCK_ANVIL_LAND, 0.3F, random.nextFloat(1.25F, 1.5F));
+        if (event.getTo().distanceSquared(hri.getHopper().getLocation()) > 25) { // 5 * 5
+            itemInteractions.remove(player);
+            playSound(player, hri.getHopper().getLocation(), Sound.BLOCK_ANVIL_LAND, 0.3F, 1.25F, 1.5F);
         }
     }
 
     @EventHandler
     public void onPlayerToggleSneak(final PlayerToggleSneakEvent event) {
         if (event.isSneaking()) return;
-        final Player player = event.getPlayer();
 
-        final HopperRenameInteraction hri = HOPPER_INTERACTIONS_ITEM.remove(player);
+        final Player player = event.getPlayer();
+        final HopperRenameInteraction hri = itemInteractions.remove(player);
         if (hri != null) {
-            final Hopper hopper = hri.getHopper();
-            renameHopper(player, hopper, String.join(",", hri.getItems()));
+            renameHopper(player, hri.getHopper(), String.join(",", hri.getItems()));
         }
     }
 
     @EventHandler
     public void onAsyncChat(final AsyncChatEvent event) {
         final Player player = event.getPlayer();
-        final Hopper hopper = HOPPER_INTERACTIONS_TYPING.get(player);
+        final Hopper hopper = typingInteractions.get(player);
         if (hopper == null) return;
 
         event.setCancelled(true);
-
         final String originalMessage = PatternUtil.serialiseComponent(event.originalMessage());
         renameHopper(player, hopper, originalMessage);
-
-        HOPPER_INTERACTIONS_TYPING.remove(player);
+        typingInteractions.remove(player);
     }
 
     private void initiateHopperRename(final Player player, final Hopper hopper) {
         final BlockBreakEvent bbe = new BlockBreakEvent(hopper.getBlock(), player);
         if (!bbe.callEvent()) return;
 
-        HOPPER_INTERACTIONS_TYPING.put(player, hopper);
+        typingInteractions.put(player, hopper);
+        playSound(player, hopper.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.1F, 0.55F, 1.25F);
+    }
 
-        final Random random = new Random();
-        player.playSound(hopper.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.1F, random.nextFloat(0.55F, 1.25F));
+    private void handleItemInteraction(final Player player, final Hopper hopper, final ItemStack item) {
+        final BlockBreakEvent bbe = new BlockBreakEvent(hopper.getBlock(), player);
+        if (!bbe.callEvent()) return;
+
+        String key = item.getType().getKey().getKey();
+        HopperRenameInteraction hri = itemInteractions.get(player);
+        if (hri == null) {
+            List<String> items = new ArrayList<>(List.of(key));
+            itemInteractions.put(player, new HopperRenameInteraction(hopper, items));
+        } else {
+            List<String> items = hri.getItems();
+            if (items.contains(key)) return;
+            items.add(key);
+        }
+        playSound(player, hopper.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.1F, 0.55F, 1.25F);
     }
 
     private void renameHopper(final Player player, final Hopper hopper, final String name) {
@@ -148,7 +125,11 @@ public class HopperRenameListener implements Listener {
         final HopperFilter instance = HopperFilter.getInstance();
         instance.getServer().getRegionScheduler().run(instance, hopper.getLocation(), task -> hopper.update());
 
+        playSound(player, hopper.getLocation(), Sound.UI_CARTOGRAPHY_TABLE_TAKE_RESULT, 0.75F, 1.25F, 1.5F);
+    }
+
+    private void playSound(Player player, Location location, Sound sound, float volume, float minPitch, float maxPitch) {
         final Random random = new Random();
-        player.playSound(hopper.getLocation(), Sound.UI_CARTOGRAPHY_TABLE_TAKE_RESULT, 0.75F, random.nextFloat(1.25F, 1.5F));
+        player.playSound(location, sound, volume, random.nextFloat(minPitch, maxPitch));
     }
 }
