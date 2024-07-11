@@ -5,6 +5,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
+import org.bukkit.block.BlockState;
 import org.bukkit.block.Hopper;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.minecart.HopperMinecart;
@@ -26,8 +27,23 @@ import java.util.Map;
 
 public class InventoryActionListener implements Listener {
 
+    private final Object lock = new Object();
+
     @EventHandler
     public void onInventoryMoveItem(final InventoryMoveItemEvent event) {
+        synchronized (lock) {
+            handleInventoryMoveItem(event);
+        }
+    }
+
+    @EventHandler
+    public void onInventoryPickupItem(final InventoryPickupItemEvent event) {
+        synchronized (lock) {
+            handleInventoryPickupItem(event);
+        }
+    }
+
+    private void handleInventoryMoveItem(final InventoryMoveItemEvent event) {
         final Inventory destination = event.getDestination();
         if (!destination.getType().equals(InventoryType.HOPPER)) return;
 
@@ -40,20 +56,16 @@ public class InventoryActionListener implements Listener {
             return;
         }
 
-        // Checks below only matter for hopper blocks
-        if (!(holder instanceof Hopper hopper)) return;
-
-        // If there was a filter on this hopper we don't need to check for a more suitable hopper since this one is specifically filtering for this item
+        if (!(holder instanceof Hopper destinationHopper)) return;
         if (hopperName != null) return;
 
         final Inventory source = event.getSource();
-
-        // If the item can pass, but there is a more suitable hopper with a filter we do this
-        if (shouldCancelDueToMoreSuitableHopper(source, hopper, item)) event.setCancelled(true);
+        if (shouldCancelDueToMoreSuitableHopper(source, destinationHopper, item)) {
+            event.setCancelled(true);
+        }
     }
 
-    @EventHandler
-    public void onInventoryPickupItem(final InventoryPickupItemEvent event) {
+    private void handleInventoryPickupItem(final InventoryPickupItemEvent event) {
         final Inventory inventory = event.getInventory();
         if (!inventory.getType().equals(InventoryType.HOPPER)) return;
 
@@ -62,68 +74,76 @@ public class InventoryActionListener implements Listener {
 
         if (hopperName == null) return;
 
-        if (!canItemPassHopper(hopperName, event.getItem().getItemStack())) event.setCancelled(true);
+        if (!canItemPassHopper(hopperName, event.getItem().getItemStack())) {
+            event.setCancelled(true);
+        }
     }
 
     private String getHopperName(InventoryHolder holder) {
-        if (holder instanceof final Hopper hopper) {
-            return PatternUtil.serialiseComponent(hopper.customName());
-        } else if (holder instanceof final HopperMinecart hopperMinecart) {
-            return PatternUtil.serialiseComponent(hopperMinecart.customName());
+        if (holder instanceof Hopper) {
+            return PatternUtil.serialiseComponent(((Hopper) holder).customName());
+        } else if (holder instanceof HopperMinecart) {
+            return PatternUtil.serialiseComponent(((HopperMinecart) holder).customName());
         }
         return null;
     }
 
     private boolean shouldCancelDueToMoreSuitableHopper(final Inventory source, final Hopper destinationHopper, final ItemStack item) {
-        // If the source is not a hopper we don't care about it
-        if (!(source.getHolder(false) instanceof final Hopper sourceHopper)) return false;
+        if (!(source.getHolder(false) instanceof Hopper sourceHopper)) return false;
 
         final org.bukkit.block.data.type.Hopper initiatorHopperData = (org.bukkit.block.data.type.Hopper) sourceHopper.getBlockData();
+        if (initiatorHopperData.getFacing().equals(BlockFace.DOWN)) return false;
 
-        // If the hopper is facing down that means it isn't possible for another hopper to also take items out of this hopper
-        final BlockFace facing = initiatorHopperData.getFacing();
-        if (facing.equals(BlockFace.DOWN)) return false;
-
-        Block facingBlock = sourceHopper.getBlock().getRelative(facing);
-
-        // If the relative block is not a hopper we don't care about it as that means our original destination is the only possible destination
+        Block facingBlock = sourceHopper.getBlock().getRelative(initiatorHopperData.getFacing());
         if (!facingBlock.getType().equals(Material.HOPPER)) return false;
 
-        final Hopper facingHopper = (Hopper) facingBlock.getState(false);
+        BlockState facingBlockState = facingBlock.getState(false);
+        if (!(facingBlockState instanceof Hopper)) return false;
 
-        Hopper otherHopper;
-        if (facingHopper.equals(destinationHopper)) { // We need to check the hopper below
-            facingBlock = sourceHopper.getBlock().getRelative(BlockFace.DOWN);
-            if (!facingBlock.getType().equals(Material.HOPPER)) return false; // We can safely say the original is the only hopper
+        final Hopper facingHopper = (Hopper) facingBlockState;
+        Hopper otherHopper = facingHopper.equals(destinationHopper)
+                ? getBlockBelowAsHopper(sourceHopper)
+                : facingHopper;
 
-            otherHopper = (Hopper) facingBlock.getState(false);
-        } else { // We need to check this hopper
-            otherHopper = facingHopper;
-        }
+        if (otherHopper == null) return false;
 
         final String hopperName = PatternUtil.serialiseComponent(otherHopper.customName());
-        if (hopperName == null) return false;
+        return hopperName != null && canItemPassHopper(hopperName, item);
+    }
 
-        // Before this method is called we are certain the destinationHopper does not have a name
-        // If the other hopper we found here can also pass this item through but does have a name we cancel this movement to prevent
-        // items moving to unnamed hoppers when there is a hopper specifically filtering for this item
-        return canItemPassHopper(hopperName, item);
+    private Hopper getBlockBelowAsHopper(Hopper sourceHopper) {
+        Block belowBlock = sourceHopper.getBlock().getRelative(BlockFace.DOWN);
+        if (belowBlock.getType().equals(Material.HOPPER)) {
+            BlockState belowBlockState = belowBlock.getState(false);
+            if (belowBlockState instanceof Hopper) {
+                return (Hopper) belowBlockState;
+            }
+        }
+        return null;
     }
 
     private boolean canItemPassHopper(final String hopperName, final ItemStack item) {
         if (hopperName == null) return true;
 
-        nextCondition: for (final String condition : hopperName.split(",")) {
-            nextAnd: for (final String andString : condition.split("&")) {
+        for (final String condition : hopperName.split(",")) {
+            boolean matchesCondition = true;
+            for (final String andString : condition.split("&")) {
+                boolean matchesAnd = false;
                 for (final String orString : andString.split("\\|")) {
-                    final String pattern = orString.toLowerCase().strip();
-                    if (canItemPassPattern(pattern, item)) continue nextAnd;
+                    if (canItemPassPattern(orString.toLowerCase().strip(), item)) {
+                        matchesAnd = true;
+                        break;
+                    }
                 }
-                continue nextCondition;
+                if (!matchesAnd) {
+                    matchesCondition = false;
+                    break;
+                }
             }
-            return true;
+            if (matchesCondition) {
+                return true;
+            }
         }
-
         return false;
     }
 
@@ -172,6 +192,7 @@ public class InventoryActionListener implements Listener {
         }
         return false;
     }
+
     private boolean itemHasEnchantment(String string, ItemStack item) {
         Map<Enchantment, Integer> enchantments;
         if (item.getType().equals(Material.ENCHANTED_BOOK)) {
@@ -187,10 +208,6 @@ public class InventoryActionListener implements Listener {
 
         final Integer userLevel = pair.getRight();
         final Integer enchantmentLevel = enchantments.get(enchantment);
-        if (userLevel == null) {
-            return enchantmentLevel != null;
-        } else {
-            return enchantmentLevel != null && enchantmentLevel.equals(userLevel);
-        }
+        return userLevel == null ? enchantmentLevel != null : enchantmentLevel != null && enchantmentLevel.equals(userLevel);
     }
 }
